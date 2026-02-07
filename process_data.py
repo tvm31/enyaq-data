@@ -34,7 +34,7 @@ def load_and_process_data(output_path):
         return
 
     print(f"Loading data from {filepath}...")
-    with open(filepath, 'r') as f:
+    with open(filepath, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
     print("Converting to DataFrame...")
