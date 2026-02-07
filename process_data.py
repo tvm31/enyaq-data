@@ -41,7 +41,8 @@ def load_and_process_data(output_path):
     df = pd.DataFrame(data['Data'])
 
     # Convert timestamp to datetime
-    df['timestampUtc'] = pd.to_datetime(df['timestampUtc'])
+    # Use format='mixed' to handle potential milliseconds or inconsistent formats
+    df['timestampUtc'] = pd.to_datetime(df['timestampUtc'], format='mixed')
 
     print("Pivoting data...")
     # Filter for interesting columns to keep the size manageable
