@@ -42,7 +42,15 @@ def load_and_process_data(output_path):
 
     # Convert timestamp to datetime
     # Use format='mixed' to handle potential milliseconds or inconsistent formats
-    df['timestampUtc'] = pd.to_datetime(df['timestampUtc'], format='mixed')
+    # Use errors='coerce' to turn unparseable strings (like "N/A") into NaT
+    df['timestampUtc'] = pd.to_datetime(df['timestampUtc'], format='mixed', errors='coerce')
+
+    # Drop rows where timestamp could not be parsed
+    initial_len = len(df)
+    df = df.dropna(subset=['timestampUtc'])
+    dropped_count = initial_len - len(df)
+    if dropped_count > 0:
+        print(f"Dropped {dropped_count} rows with invalid timestamps.")
 
     print("Pivoting data...")
     # Filter for interesting columns to keep the size manageable
