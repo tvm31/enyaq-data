@@ -26,7 +26,7 @@ def find_data_file():
 
     return None
 
-def load_and_process_data(output_path):
+def load_and_process_data(output_path, notifications_output_path):
     filepath = find_data_file()
 
     if not filepath:
@@ -34,8 +34,13 @@ def load_and_process_data(output_path):
         return
 
     print(f"Loading data from {filepath}...")
-    with open(filepath, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except UnicodeDecodeError:
+        print("Falling back to CP1252 encoding...")
+        with open(filepath, 'r', encoding='cp1252') as f:
+            data = json.load(f)
 
     print("Converting to DataFrame...")
     df = pd.DataFrame(data['Data'])
@@ -43,7 +48,8 @@ def load_and_process_data(output_path):
     # Convert timestamp to datetime
     # Use format='mixed' to handle potential milliseconds or inconsistent formats
     # Use errors='coerce' to turn unparseable strings (like "N/A") into NaT
-    df['timestampUtc'] = pd.to_datetime(df['timestampUtc'], format='mixed', errors='coerce')
+    # Use utc=True to handle mixed timezones by normalizing to UTC
+    df['timestampUtc'] = pd.to_datetime(df['timestampUtc'], format='mixed', errors='coerce', utc=True)
 
     # Drop rows where timestamp could not be parsed
     initial_len = len(df)
@@ -52,7 +58,26 @@ def load_and_process_data(output_path):
     if dropped_count > 0:
         print(f"Dropped {dropped_count} rows with invalid timestamps.")
 
-    print("Pivoting data...")
+    print("Extracting Notifications...")
+    # Extract notifications separately (text, priority, category)
+    notification_fields = ['text', 'priority', 'category', 'iconColor']
+    df_notifications = df[df['dataFieldName'].isin(notification_fields)].copy()
+
+    if not df_notifications.empty:
+        # Pivot notifications so each timestamp has text/priority/category
+        # We don't forward fill notifications because they are point-in-time events
+        df_notes_pivot = df_notifications.pivot_table(
+            index='timestampUtc',
+            columns='dataFieldName',
+            values='value',
+            aggfunc='first' # Take the first if duplicates exist
+        )
+        print(f"Saving notifications to {notifications_output_path}...")
+        df_notes_pivot.to_csv(notifications_output_path)
+    else:
+        print("No notifications found.")
+
+    print("Pivoting main data...")
     # Filter for interesting columns to keep the size manageable
     interesting_fields = [
         'currentSOCInPct',
@@ -63,7 +88,11 @@ def load_and_process_data(output_path):
         'cruisingRangeElectricInKm',
         'temperatureOutsideVehicle',
         'climatisationState',
-        'chargingState'
+        'chargingState',
+        'inspectionDueDays',
+        'batteryCareMode',
+        'plugConnectionState',
+        'externalPower'
     ]
 
     df_filtered = df[df['dataFieldName'].isin(interesting_fields)]
@@ -79,12 +108,21 @@ def load_and_process_data(output_path):
         'remainingChargingTimeToCompleteInMin',
         'mileage',
         'cruisingRangeElectricInKm',
-        'temperatureOutsideVehicle'
+        'temperatureOutsideVehicle',
+        'inspectionDueDays'
     ]
 
     for col in numeric_cols:
         if col in df_pivot.columns:
             df_pivot[col] = pd.to_numeric(df_pivot[col], errors='coerce')
+
+    # Fix Temperature (Kelvin to Celsius)
+    if 'temperatureOutsideVehicle' in df_pivot.columns:
+        # Check if values look like Kelvin (> 200)
+        # Using 200 as a safe threshold (200K = -73C, unlikely on Earth in a car)
+        if df_pivot['temperatureOutsideVehicle'].mean() > 200:
+            print("Converting Temperature from Kelvin to Celsius...")
+            df_pivot['temperatureOutsideVehicle'] = df_pivot['temperatureOutsideVehicle'] - 273.15
 
     # Sort by time
     df_pivot = df_pivot.sort_index()
@@ -100,4 +138,4 @@ def load_and_process_data(output_path):
     print("Done.")
 
 if __name__ == "__main__":
-    load_and_process_data("processed_data.csv")
+    load_and_process_data("processed_data.csv", "notifications.csv")

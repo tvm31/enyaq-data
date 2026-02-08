@@ -3,3 +3,4 @@ __pycache__/
 processed_data.csv
 *.zip
 *.json
+notifications.csv
