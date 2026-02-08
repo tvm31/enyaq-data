@@ -4,3 +4,5 @@ processed_data.csv
 *.zip
 *.json
 notifications.csv
+trips.csv
+charges.csv

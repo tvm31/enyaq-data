@@ -27,10 +27,28 @@ def load_notifications():
         df = pd.read_csv("notifications.csv", index_col='timestampUtc', parse_dates=True)
         return df
     except FileNotFoundError:
-        return pd.DataFrame() # Return empty if not found
+        return pd.DataFrame()
+
+@st.cache_data
+def load_trips():
+    try:
+        df = pd.read_csv("trips.csv", parse_dates=['Start Time', 'End Time'])
+        return df
+    except FileNotFoundError:
+        return pd.DataFrame()
+
+@st.cache_data
+def load_charges():
+    try:
+        df = pd.read_csv("charges.csv", parse_dates=['Start Time', 'End Time'])
+        return df
+    except FileNotFoundError:
+        return pd.DataFrame()
 
 df = load_data()
 df_notif = load_notifications()
+df_trips = load_trips()
+df_charges = load_charges()
 
 if df.empty:
     st.stop()
@@ -48,14 +66,33 @@ if start_date <= end_date:
     mask_start = str(start_date)
     mask_end = str(end_date)
     df_filtered = df.loc[mask_start:mask_end]
+
     if not df_notif.empty:
         df_notif_filtered = df_notif.loc[mask_start:mask_end]
     else:
         df_notif_filtered = pd.DataFrame()
+
+    # Filter Trips
+    if not df_trips.empty:
+         # Trips starting within range
+         mask_trips = (df_trips['Start Time'].dt.date >= start_date) & (df_trips['Start Time'].dt.date <= end_date)
+         df_trips_filtered = df_trips[mask_trips]
+    else:
+         df_trips_filtered = pd.DataFrame()
+
+    # Filter Charges
+    if not df_charges.empty:
+         mask_charges = (df_charges['Start Time'].dt.date >= start_date) & (df_charges['Start Time'].dt.date <= end_date)
+         df_charges_filtered = df_charges[mask_charges]
+    else:
+         df_charges_filtered = pd.DataFrame()
+
 else:
     st.error("Error: Start date must be before end date.")
     df_filtered = df
     df_notif_filtered = df_notif
+    df_trips_filtered = df_trips
+    df_charges_filtered = df_charges
 
 # Main Layout
 st.title("🚗 Skoda Enyaq Data Dashboard")
@@ -66,7 +103,12 @@ col1, col2, col3, col4 = st.columns(4)
 current_mileage = df_filtered['mileage'].max()
 total_km_driven = df_filtered['mileage'].max() - df_filtered['mileage'].min()
 avg_temp = df_filtered['temperatureOutsideVehicle'].mean()
-avg_soc = df_filtered['currentSOCInPct'].mean()
+
+# Calculate total energy charged in period
+if not df_charges_filtered.empty:
+    total_charged_kwh = df_charges_filtered['Energy Added (kWh)'].sum()
+else:
+    total_charged_kwh = 0
 
 # Service KPI
 if 'inspectionDueDays' in df_filtered.columns:
@@ -76,39 +118,78 @@ else:
     service_label = "N/A"
 
 col1.metric("Current Mileage", f"{current_mileage:,.0f} km")
-col2.metric("Distance Driven (Period)", f"{total_km_driven:,.0f} km")
-col3.metric("Avg Outside Temp", f"{avg_temp:.1f} °C")
-col4.metric("Next Inspection In", service_label)
+col2.metric("Distance Driven", f"{total_km_driven:,.0f} km")
+col3.metric("Charged Energy", f"{total_charged_kwh:.1f} kWh")
+col4.metric("Next Inspection", service_label)
 
-# Tabs for different analyses
-tab1, tab2, tab3, tab4 = st.tabs(["Battery & Charging", "Driving & Usage", "Efficiency & Temperature", "Logs & Notifications"])
+# Tabs
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Trips (Logbook)", "Charging Analysis", "Battery & Usage", "Efficiency & Temp", "Logs"])
 
 with tab1:
-    st.header("Battery State of Charge (SOC)")
+    st.header("Logbook (Kniha Jízd)")
+    if not df_trips_filtered.empty:
+        st.dataframe(
+            df_trips_filtered.style.format({
+                "Distance (km)": "{:.1f}",
+                "Start SOC (%)": "{:.0f}",
+                "End SOC (%)": "{:.0f}",
+                "Energy Used (kWh)": "{:.1f}",
+                "Consumption (kWh/100km)": "{:.1f}",
+                "Avg Temp (°C)": "{:.1f}"
+            }),
+            use_container_width=True
+        )
+
+        # Monthly Stats
+        st.subheader("Monthly Stats")
+        df_trips_filtered['Month'] = df_trips_filtered['Start Time'].dt.to_period('M')
+        monthly_stats = df_trips_filtered.groupby('Month').agg({
+            'Distance (km)': 'sum',
+            'Energy Used (kWh)': 'sum',
+            'Avg Temp (°C)': 'mean'
+        }).reset_index()
+        monthly_stats['Avg Consumption (kWh/100km)'] = (monthly_stats['Energy Used (kWh)'] / monthly_stats['Distance (km)']) * 100
+        monthly_stats['Month'] = monthly_stats['Month'].astype(str)
+
+        fig_monthly = px.bar(monthly_stats, x='Month', y='Distance (km)', title="Monthly Distance Driven")
+        st.plotly_chart(fig_monthly, use_container_width=True)
+
+    else:
+        st.info("No trips found in this period.")
+
+with tab2:
+    st.header("Charging Analysis")
+    if not df_charges_filtered.empty:
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            st.dataframe(
+                df_charges_filtered[['Start Time', 'Duration (h)', 'Start SOC (%)', 'End SOC (%)', 'Energy Added (kWh)', 'Avg Power (kW)']],
+                use_container_width=True
+            )
+        with col_c2:
+            fig_charge_energy = px.bar(df_charges_filtered, x='Start Time', y='Energy Added (kWh)', title="Energy Added per Session")
+            st.plotly_chart(fig_charge_energy, use_container_width=True)
+
+        fig_charge_scatter = px.scatter(
+            df_charges_filtered,
+            x='Avg Power (kW)',
+            y='Energy Added (kWh)',
+            size='Duration (h)',
+            color='Start SOC (%)',
+            title="Charging Session Overview (Size = Duration)"
+        )
+        st.plotly_chart(fig_charge_scatter, use_container_width=True)
+
+    else:
+         st.info("No charging sessions found in this period.")
+
+with tab3:
+    st.header("Battery & Usage")
 
     # SOC Line Chart
     fig_soc = px.line(df_filtered, x=df_filtered.index, y="currentSOCInPct", title="SOC (%) Over Time")
     fig_soc.update_traces(line_color='#00CC96')
     st.plotly_chart(fig_soc, use_container_width=True)
-
-    col_charge1, col_charge2 = st.columns(2)
-
-    with col_charge1:
-        st.subheader("Charging Power Distribution")
-        # Filter where charging power is > 0
-        charging_df = df_filtered[df_filtered['chargePowerInKW'] > 0]
-        if not charging_df.empty:
-            fig_power = px.histogram(charging_df, x="chargePowerInKW", nbins=50, title="Charging Power (kW)", color_discrete_sequence=['#636EFA'])
-            st.plotly_chart(fig_power, use_container_width=True)
-        else:
-            st.info("No charging data available for this period.")
-
-    with col_charge2:
-         st.subheader("Charging Mode")
-         if 'chargeMode' in df_filtered.columns:
-             mode_counts = df_filtered['chargeMode'].value_counts()
-             fig_mode = px.pie(names=mode_counts.index, values=mode_counts.values, title="Charging Modes")
-             st.plotly_chart(fig_mode, use_container_width=True)
 
     # Battery Care Mode
     if 'batteryCareMode' in df_filtered.columns:
@@ -117,34 +198,13 @@ with tab1:
         fig_care = px.bar(x=care_counts.index, y=care_counts.values, title="Battery Care Mode Status Count", labels={'x': 'Status', 'y': 'Count'})
         st.plotly_chart(fig_care, use_container_width=True)
 
-with tab2:
-    st.header("Mileage Analysis")
-
-    # Calculate daily mileage on the FULL dataset to ensure the first day of the range has a diff
-    full_daily_mileage = df['mileage'].resample('D').max().diff().fillna(0)
-
-    # Filter for the selected date range
-    daily_mileage = full_daily_mileage.loc[str(start_date):str(end_date)]
-
-    # Filter out days with 0 or negative mileage (if any glitches)
-    daily_mileage = daily_mileage[daily_mileage > 0]
-
-    fig_daily = px.bar(daily_mileage, x=daily_mileage.index, y=daily_mileage.values, title="Daily Distance Driven (km)")
-    fig_daily.update_layout(xaxis_title="Date", yaxis_title="Distance (km)")
-    st.plotly_chart(fig_daily, use_container_width=True)
-
-    st.subheader("Mileage Accumulation")
-    fig_accum = px.area(df_filtered, x=df_filtered.index, y="mileage", title="Total Mileage Over Time")
-    st.plotly_chart(fig_accum, use_container_width=True)
-
-with tab3:
+with tab4:
     st.header("Temperature & Efficiency")
 
     col_temp1, col_temp2 = st.columns(2)
 
     with col_temp1:
         st.subheader("Outside Temperature")
-        # Temperature is now converted to Celsius in processed_data.csv
         fig_temp = px.line(df_filtered, x=df_filtered.index, y="temperatureOutsideVehicle", title="Outside Temperature (°C)")
         fig_temp.update_traces(line_color='#EF553B')
         st.plotly_chart(fig_temp, use_container_width=True)
@@ -165,7 +225,19 @@ with tab3:
         )
         st.plotly_chart(fig_scatter, use_container_width=True)
 
-with tab4:
+    # Consumption vs Temp (from Trips)
+    if not df_trips_filtered.empty:
+        st.subheader("Consumption vs. Temperature")
+        fig_eff = px.scatter(
+            df_trips_filtered,
+            x='Avg Temp (°C)',
+            y='Consumption (kWh/100km)',
+            size='Distance (km)',
+            title='Consumption vs. Avg Trip Temperature'
+        )
+        st.plotly_chart(fig_eff, use_container_width=True)
+
+with tab5:
     st.header("Vehicle Logs & Notifications")
     if not df_notif_filtered.empty:
         # Sort by time desc
